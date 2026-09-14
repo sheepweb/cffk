@@ -497,7 +497,7 @@ test("PerPay adapter signs create requests and validates checkout response", asy
 
 test("PerPay webhook verifies raw bytes and maps confirmed events", async () => {
   const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-  const rawBody = JSON.stringify({ schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440001", event_type: "PAYMENT_CONFIRMED", order_id: "550e8400-e29b-41d4-a716-446655440002", merchant_order_no: "ORD-PP-2", currency: "CNY", payment_status: "CONFIRMED", requested_amount_cents: 500, received_amount_cents: 501 });
+  const rawBody = JSON.stringify({ schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440001", event_type: "PAYMENT_CONFIRMED", order_id: "550e8400-e29b-41d4-a716-446655440002", merchant_order_no: "ORD-PP-2", currency: "CNY", payment_status: "CONFIRMED", requested_amount_cents: 500, payable_amount_cents: 501, received_amount_cents: 501 });
   const digest = createHash("sha256").update(rawBody).digest("hex");
   const keyId = "550e8400-e29b-41d4-a716-446655440003";
   const deliveryId = "550e8400-e29b-41d4-a716-446655440004";

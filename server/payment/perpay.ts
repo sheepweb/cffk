@@ -5,6 +5,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const MERCHANT_NO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
+// PerPay adds a unique offset for ledger matching; only the requested amount enters cffk.
+function paymentAmounts(value: Record<string, unknown>) {
+  const requested = Number(value.requested_amount_cents);
+  const payable = Number(value.payable_amount_cents);
+  const received = Number(value.received_amount_cents);
+  if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(payable) || payable <= requested || !Number.isSafeInteger(received) || received !== payable) return null;
+  return { requested, payable };
+}
+
 function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
   return Uint8Array.from(atob(normalized), (character) => character.charCodeAt(0));
@@ -71,6 +80,7 @@ async function request(config: PerpayConfig, method: string, path: string, body?
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
+    // Workers supports manual, not error, redirect handling.
     const response = await fetch(`${config.baseUrl}${target}`, {
       method: method.toUpperCase(),
       headers: { "content-type": "application/json", "X-PerPay-Client-Id": "default", "X-PerPay-Timestamp": timestamp, "X-PerPay-Nonce": nonce, "X-PerPay-Signature-Version": "v1", "X-PerPay-Signature": signature },
@@ -120,21 +130,20 @@ export function createPerpayAdapter(config: PerpayConfig) {
       try { event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes)); } catch { return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" }); }
       const eventType = typeof event.event_type === "string" ? event.event_type : "";
       if (event.schema !== "perpay:outbox-event:v2" || event.event_id !== eventId || !["PAYMENT_CONFIRMED", "PAYMENT_DISPUTED", "REFUND_UPDATED"].includes(eventType) || !UUID.test(String(event.order_id ?? "")) || !MERCHANT_NO.test(String(event.merchant_order_no ?? "")) || event.currency !== "CNY") return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" });
-      const requested = Number(event.requested_amount_cents);
-      const receivedAmount = Number(event.received_amount_cents ?? event.payable_amount_cents);
-      if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(receivedAmount) || receivedAmount < requested) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_AMOUNT_INVALID" });
-      return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), amount: requested, currency: "CNY", status: eventType === "PAYMENT_CONFIRMED" && event.payment_status === "CONFIRMED" ? "PAID" : eventType === "PAYMENT_DISPUTED" ? "FAILED" : "PENDING", message: "PERPAY_WEBHOOK" });
+      const amounts = paymentAmounts(event);
+      if (!amounts) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_AMOUNT_INVALID" });
+      return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), amount: amounts.requested, currency: "CNY", status: eventType === "PAYMENT_CONFIRMED" && event.payment_status === "CONFIRMED" ? "PAID" : eventType === "PAYMENT_DISPUTED" ? "FAILED" : "PENDING", message: "PERPAY_WEBHOOK" });
     },
     query: async (input: { orderNo: string; paymentOrderNo?: string; amount: number }): Promise<PaymentQueryResult> => {
       const path = input.paymentOrderNo && UUID.test(input.paymentOrderNo) ? `/api/v1/orders/${input.paymentOrderNo}` : `/api/v1/orders/by-merchant-no/${encodeURIComponent(input.orderNo)}`;
       try {
         const data = await request(config, "GET", path);
         if (data.merchant_order_no !== input.orderNo || data.currency !== "CNY") return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
-        const requested = Number(data.requested_amount_cents);
-        const received = Number(data.received_amount_cents ?? data.payable_amount_cents);
-        if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(received) || received < requested) return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
-        const status = data.payment?.status === "CONFIRMED" ? "PAID" : data.payment?.status === "DISPUTED" ? "FAILED" : "PENDING";
-        return { provider: "PERPAY", verified: true, orderNo: input.orderNo, paymentOrderNo: data.order_id, amount: requested, currency: data.currency, status, message: "PERPAY_QUERY" };
+        const amounts = paymentAmounts(data);
+        if (!amounts) return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
+        const payment = data.payment as Record<string, unknown> | undefined;
+        const status = payment?.status === "CONFIRMED" ? "PAID" : payment?.status === "DISPUTED" ? "FAILED" : "PENDING";
+        return { provider: "PERPAY", verified: true, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, amount: amounts.requested, currency: data.currency as string | undefined, status, message: "PERPAY_QUERY" };
       } catch { return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: input.paymentOrderNo, status: "PENDING", message: "PERPAY_QUERY_FAILED" }; }
     },
   };
