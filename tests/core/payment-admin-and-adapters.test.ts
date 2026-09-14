@@ -525,6 +525,64 @@ test("PerPay refund webhook is acknowledged without payment amount matching", as
   assert.deepEqual(result, { provider: "PERPAY", verified: true, orderNo: "ORD-PP-REFUND", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440012", currency: "CNY", status: "PENDING", message: "PERPAY_REFUND_UPDATED" });
 });
 
+test("PerPay query does not mark a confirmed order paid without received amount", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ data: { order_id: "550e8400-e29b-41d4-a716-446655440020", merchant_order_no: "ORD-PP-Q1", currency: "CNY", requested_amount_cents: 100, payable_amount_cents: 101, received_amount_cents: null, payment: { status: "CONFIRMED" } } }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", webhookSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", notifyUrl: "", returnUrl: "" });
+    const result = await adapter.query!({ orderNo: "ORD-PP-Q1", amount: 100 });
+    assert.deepEqual(result, { provider: "PERPAY", verified: false, orderNo: "ORD-PP-Q1", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440020", status: "PENDING", message: "PERPAY_QUERY_FAILED" });
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("PerPay rejects string amounts in signed callbacks", async () => {
+  const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const rawBody = JSON.stringify({ schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440021", event_type: "PAYMENT_CONFIRMED", order_id: "550e8400-e29b-41d4-a716-446655440022", merchant_order_no: "ORD-PP-TYPE", currency: "CNY", payment_status: "CONFIRMED", requested_amount_cents: "100", payable_amount_cents: "101", received_amount_cents: "101" });
+  const keyId = "550e8400-e29b-41d4-a716-446655440023";
+  const deliveryId = "550e8400-e29b-41d4-a716-446655440024";
+  const timestamp = String(Date.now());
+  const attempt = "1";
+  const digest = createHash("sha256").update(rawBody).digest("hex");
+  const signature = `v1=${createHmac("sha256", Buffer.from(secret, "base64url")).update(["perpay:webhook:v1", keyId, timestamp, deliveryId, "550e8400-e29b-41d4-a716-446655440021", attempt, digest].join("\n")).digest("hex")}`;
+  const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: secret, webhookSecret: secret, notifyUrl: "", returnUrl: "" });
+  const result = await adapter.verify({ payload: {}, rawBody, rawBodyBytes: new TextEncoder().encode(rawBody), headers: new Headers({ "X-PerPay-Webhook-Version": "1", "X-PerPay-Webhook-Key-Id": keyId, "X-PerPay-Webhook-Timestamp": timestamp, "X-PerPay-Webhook-Delivery-Id": deliveryId, "X-PerPay-Webhook-Event-Id": "550e8400-e29b-41d4-a716-446655440021", "X-PerPay-Webhook-Attempt": attempt, "X-PerPay-Webhook-Signature": signature }) });
+  assert.equal(result.verified, false);
+  assert.equal(result.message, "PERPAY_WEBHOOK_AMOUNT_INVALID");
+});
+
+test("PerPay rejects tampered, stale, and malformed webhook requests", async () => {
+  const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const event = { schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440031", event_type: "PAYMENT_CONFIRMED", order_id: "550e8400-e29b-41d4-a716-446655440032", merchant_order_no: "ORD-PP-SIG", currency: "CNY", payment_status: "CONFIRMED", requested_amount_cents: 100, payable_amount_cents: 101, received_amount_cents: 101 };
+  const rawBody = JSON.stringify(event);
+  const keyId = "550e8400-e29b-41d4-a716-446655440033";
+  const deliveryId = "550e8400-e29b-41d4-a716-446655440034";
+  const eventId = event.event_id;
+  const attempt = "1";
+  const sign = (body: string, ts: string) => `v1=${createHmac("sha256", Buffer.from(secret, "base64url")).update(["perpay:webhook:v1", keyId, ts, deliveryId, eventId, attempt, createHash("sha256").update(body).digest("hex")].join("\n")).digest("hex")}`;
+  const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: secret, webhookSecret: secret, notifyUrl: "", returnUrl: "" });
+  const validHeaders = (timestamp: string, signature: string) => new Headers({ "X-PerPay-Webhook-Version": "1", "X-PerPay-Webhook-Key-Id": keyId, "X-PerPay-Webhook-Timestamp": timestamp, "X-PerPay-Webhook-Delivery-Id": deliveryId, "X-PerPay-Webhook-Event-Id": eventId, "X-PerPay-Webhook-Attempt": attempt, "X-PerPay-Webhook-Signature": signature });
+  const now = String(Date.now());
+  const tampered = await adapter.verify({ payload: {}, rawBody: rawBody + " ", rawBodyBytes: new TextEncoder().encode(rawBody + " "), headers: validHeaders(now, sign(rawBody, now)) });
+  assert.equal(tampered.verified, false);
+  const staleTimestamp = String(Date.now() - 301_000);
+  const stale = await adapter.verify({ payload: {}, rawBody, rawBodyBytes: new TextEncoder().encode(rawBody), headers: validHeaders(staleTimestamp, sign(rawBody, staleTimestamp)) });
+  assert.equal(stale.message, "PERPAY_WEBHOOK_INVALID");
+  const malformed = await adapter.verify({ payload: {}, rawBody: "{", rawBodyBytes: new TextEncoder().encode("{"), headers: validHeaders(now, sign("{", now)) });
+  assert.equal(malformed.message, "PERPAY_WEBHOOK_INVALID");
+});
+
+test("PerPay create rejects redirects and non-JSON responses", async () => {
+  const originalFetch = globalThis.fetch;
+  const config = { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", webhookSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", notifyUrl: "", returnUrl: "" };
+  try {
+    const adapter = createProviderAdapter("PERPAY", config);
+    globalThis.fetch = async () => new Response(null, { status: 302, headers: { location: "https://evil.example" } });
+    await assert.rejects(() => adapter.create({ orderNo: "ORD-PP-HTTP", amount: 100, subject: "Order", notifyUrl: "", returnUrl: "" }), /PERPAY_REDIRECT_REJECTED/);
+    globalThis.fetch = async () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } });
+    await assert.rejects(() => adapter.create({ orderNo: "ORD-PP-HTTP", amount: 100, subject: "Order", notifyUrl: "", returnUrl: "" }), /PERPAY_INVALID_RESPONSE/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("PerPay create surfaces a redacted provider error code", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "return_url_not_allowed", message: "sensitive details omitted" } }), { status: 422, headers: { "content-type": "application/json" } });

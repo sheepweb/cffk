@@ -7,14 +7,14 @@ const MAX_RESPONSE_BYTES = 256 * 1024;
 
 // PerPay adds a unique offset for ledger matching; only the requested amount enters cffk.
 function paymentAmounts(value: Record<string, unknown>, requireReceived = true) {
-  const requested = Number(value.requested_amount_cents);
-  const payable = Number(value.payable_amount_cents);
+  const requested = value.requested_amount_cents;
+  const payable = value.payable_amount_cents;
   const receivedValue = value.received_amount_cents;
-  const received = receivedValue === null || receivedValue === undefined ? null : Number(receivedValue);
-  if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(payable) || payable <= requested) return null;
-  if (received !== null && (!Number.isSafeInteger(received) || received !== payable)) return null;
+  const received = receivedValue === null || receivedValue === undefined ? null : receivedValue;
+  if (typeof requested !== "number" || typeof payable !== "number" || !Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(payable) || payable <= requested) return null;
+  if (received !== null && (typeof received !== "number" || !Number.isSafeInteger(received) || received !== payable)) return null;
   if (requireReceived && received === null) return null;
-  return { requested, payable };
+  return { requested, payable, received };
 }
 
 function decodeBase64Url(value: string) {
@@ -151,6 +151,7 @@ export function createPerpayAdapter(config: PerpayConfig) {
         if (!amounts) return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
         const payment = data.payment as Record<string, unknown> | undefined;
         const status = payment?.status === "CONFIRMED" ? "PAID" : payment?.status === "DISPUTED" ? "FAILED" : "PENDING";
+        if (status === "PAID" && amounts.received === null) return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
         return { provider: "PERPAY", verified: true, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, amount: amounts.requested, currency: data.currency as string | undefined, status, message: "PERPAY_QUERY" };
       } catch { return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: input.paymentOrderNo, status: "PENDING", message: "PERPAY_QUERY_FAILED" }; }
     },
