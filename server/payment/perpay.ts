@@ -93,12 +93,13 @@ function result(values: Partial<PaymentNotifyResult> & Pick<PaymentNotifyResult,
 export function createPerpayAdapter(config: PerpayConfig) {
   return {
     create: async (input: { orderNo: string; amount: number; subject: string; notifyUrl: string; returnUrl: string }) => {
-      const data = await request(config, "POST", "/api/v1/orders", { idempotency_key: `cffk:${input.orderNo}`, merchant_order_no: input.orderNo, amount_cents: input.amount, product_name: input.subject, notify_url: input.notifyUrl, return_url: input.returnUrl });
-      const checkout = data.checkout as { checkout_url?: unknown } | undefined;
-      if (!checkout || typeof checkout.checkout_url !== "string" || !checkout.checkout_url) throw new Error("PERPAY_CREATE_FAILED");
+      const requestBody = { idempotency_key: `cffk:${input.orderNo}`, merchant_order_no: input.orderNo, amount_cents: input.amount, product_name: input.subject, ...(input.notifyUrl ? { notify_url: input.notifyUrl } : {}), ...(input.returnUrl ? { return_url: input.returnUrl } : {}) };
+      const data = await request(config, "POST", "/api/v1/orders", requestBody);
+      const checkout = data.checkout as { checkout_url?: unknown; token?: unknown } | undefined;
+      if (!checkout || typeof checkout.checkout_url !== "string" || !checkout.checkout_url) throw new Error("PERPAY_CREATE_CHECKOUT_MISSING");
       const url = new URL(checkout.checkout_url);
-      if (url.origin !== config.baseUrl || url.username || url.password || url.search || url.hash || !/^\/checkout\/pct1_[A-Za-z0-9_-]{43}$/.test(url.pathname)) throw new Error("PERPAY_CREATE_FAILED");
-      if (typeof data.order_id !== "string" || !UUID.test(data.order_id)) throw new Error("PERPAY_CREATE_FAILED");
+      if (url.origin !== config.baseUrl || url.username || url.password || url.search || url.hash || !/^\/checkout\/pct1_[A-Za-z0-9_-]{43}$/.test(url.pathname)) throw new Error("PERPAY_CREATE_CHECKOUT_URL_INVALID");
+      if (typeof data.order_id !== "string" || !UUID.test(data.order_id)) throw new Error("PERPAY_CREATE_ORDER_ID_INVALID");
       return { mode: "redirect" as const, url: url.href, paymentOrderNo: data.order_id };
     },
     verify: async (input: { payload: Record<string, string>; rawBody?: string; rawBodyBytes?: Uint8Array; headers?: Headers }) => {

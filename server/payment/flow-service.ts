@@ -21,9 +21,10 @@ type RuntimeContext = {
 };
 
 function safePaymentCreateError(cause: unknown) {
-  return cause instanceof Error && /^[A-Z][A-Z0-9_:-]+$/.test(cause.message) && cause.message.length <= 120
-    ? cause.message
-    : "PAYMENT_CREATE_FAILED";
+  if (!(cause instanceof Error)) return "PAYMENT_CREATE_FAILED";
+  if (/^[A-Z][A-Z0-9_:-]+$/.test(cause.message) && cause.message.length <= 120) return cause.message;
+  const name = cause.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return name ? `PAYMENT_RUNTIME_${name}` : "PAYMENT_CREATE_FAILED";
 }
 
 function paymentReturnUrl(value: unknown, orderNo: string) {
@@ -194,4 +195,3 @@ export function requirePaymentFlowService() {
   if (!context.env?.DB) appError("DATABASE_UNAVAILABLE");
   return new PaymentFlowService(context.env.DB, context.env);
 }
-
