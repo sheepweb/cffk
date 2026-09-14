@@ -111,18 +111,18 @@ export function createPerpayAdapter(config: PerpayConfig) {
       const deliveryId = headers?.get("X-PerPay-Webhook-Delivery-Id");
       const eventId = headers?.get("X-PerPay-Webhook-Event-Id");
       const attempt = headers?.get("X-PerPay-Webhook-Attempt");
-      const received = headers?.get("X-PerPay-Webhook-Signature");
+      const receivedSignature = headers?.get("X-PerPay-Webhook-Signature");
       const bodyBytes = input.rawBodyBytes ?? new TextEncoder().encode(input.rawBody ?? "");
-      if (version !== "1" || !keyId || !UUID.test(keyId) || !deliveryId || !UUID.test(deliveryId) || !eventId || !UUID.test(eventId) || !timestamp || !/^[1-9][0-9]*$/.test(timestamp) || !Number.isSafeInteger(Number(timestamp)) || Math.abs(Date.now() - Number(timestamp)) > 300000 || !attempt || !/^[1-9][0-9]{0,8}$/.test(attempt) || !received || !/^v1=[0-9a-f]{64}$/.test(received)) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" });
+      if (version !== "1" || !keyId || !UUID.test(keyId) || !deliveryId || !UUID.test(deliveryId) || !eventId || !UUID.test(eventId) || !timestamp || !/^[1-9][0-9]*$/.test(timestamp) || !Number.isSafeInteger(Number(timestamp)) || Math.abs(Date.now() - Number(timestamp)) > 300000 || !attempt || !/^[1-9][0-9]{0,8}$/.test(attempt) || !receivedSignature || !/^v1=[0-9a-f]{64}$/.test(receivedSignature)) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" });
       const expected = `v1=${await hmac(config.webhookSecret, ["perpay:webhook:v1", keyId, timestamp, deliveryId, eventId, attempt, await sha256(bodyBytes)].join("\n"))}`;
-      if (!constantTimeEqual(received, expected)) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_VERIFY_FAILED" });
+      if (!constantTimeEqual(receivedSignature, expected)) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_VERIFY_FAILED" });
       let event: Record<string, unknown>;
       try { event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes)); } catch { return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" }); }
       const eventType = typeof event.event_type === "string" ? event.event_type : "";
       if (event.schema !== "perpay:outbox-event:v2" || event.event_id !== eventId || !["PAYMENT_CONFIRMED", "PAYMENT_DISPUTED", "REFUND_UPDATED"].includes(eventType) || !UUID.test(String(event.order_id ?? "")) || !MERCHANT_NO.test(String(event.merchant_order_no ?? "")) || event.currency !== "CNY") return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" });
       const requested = Number(event.requested_amount_cents);
-      const received = Number(event.received_amount_cents ?? event.payable_amount_cents);
-      if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(received) || received < requested) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_AMOUNT_INVALID" });
+      const receivedAmount = Number(event.received_amount_cents ?? event.payable_amount_cents);
+      if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(receivedAmount) || receivedAmount < requested) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_AMOUNT_INVALID" });
       return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), amount: requested, currency: "CNY", status: eventType === "PAYMENT_CONFIRMED" && event.payment_status === "CONFIRMED" ? "PAID" : eventType === "PAYMENT_DISPUTED" ? "FAILED" : "PENDING", message: "PERPAY_WEBHOOK" });
     },
     query: async (input: { orderNo: string; paymentOrderNo?: string; amount: number }): Promise<PaymentQueryResult> => {
