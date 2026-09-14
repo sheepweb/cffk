@@ -6,11 +6,14 @@ const MERCHANT_NO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
 // PerPay adds a unique offset for ledger matching; only the requested amount enters cffk.
-function paymentAmounts(value: Record<string, unknown>) {
+function paymentAmounts(value: Record<string, unknown>, requireReceived = true) {
   const requested = Number(value.requested_amount_cents);
   const payable = Number(value.payable_amount_cents);
-  const received = Number(value.received_amount_cents);
-  if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(payable) || payable <= requested || !Number.isSafeInteger(received) || received !== payable) return null;
+  const receivedValue = value.received_amount_cents;
+  const received = receivedValue === null || receivedValue === undefined ? null : Number(receivedValue);
+  if (!Number.isSafeInteger(requested) || requested < 1 || !Number.isSafeInteger(payable) || payable <= requested) return null;
+  if (received !== null && (!Number.isSafeInteger(received) || received !== payable)) return null;
+  if (requireReceived && received === null) return null;
   return { requested, payable };
 }
 
@@ -130,16 +133,21 @@ export function createPerpayAdapter(config: PerpayConfig) {
       try { event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes)); } catch { return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" }); }
       const eventType = typeof event.event_type === "string" ? event.event_type : "";
       if (event.schema !== "perpay:outbox-event:v2" || event.event_id !== eventId || !["PAYMENT_CONFIRMED", "PAYMENT_DISPUTED", "REFUND_UPDATED"].includes(eventType) || !UUID.test(String(event.order_id ?? "")) || !MERCHANT_NO.test(String(event.merchant_order_no ?? "")) || event.currency !== "CNY") return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_INVALID" });
+      if (eventType === "REFUND_UPDATED") {
+        // cffk does not mutate payment state for PerPay refunds.
+        return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), currency: "CNY", status: "PENDING", message: "PERPAY_REFUND_UPDATED" });
+      }
       const amounts = paymentAmounts(event);
       if (!amounts) return result({ verified: false, status: "FAILED", message: "PERPAY_WEBHOOK_AMOUNT_INVALID" });
-      return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), amount: amounts.requested, currency: "CNY", status: eventType === "PAYMENT_CONFIRMED" && event.payment_status === "CONFIRMED" ? "PAID" : eventType === "PAYMENT_DISPUTED" ? "FAILED" : "PENDING", message: "PERPAY_WEBHOOK" });
+      return result({ verified: true, orderNo: String(event.merchant_order_no), paymentOrderNo: String(event.order_id), amount: amounts.requested, currency: "CNY", status: eventType === "PAYMENT_CONFIRMED" && event.payment_status === "CONFIRMED" ? "PAID" : "FAILED", message: "PERPAY_WEBHOOK" });
     },
     query: async (input: { orderNo: string; paymentOrderNo?: string; amount: number }): Promise<PaymentQueryResult> => {
       const path = input.paymentOrderNo && UUID.test(input.paymentOrderNo) ? `/api/v1/orders/${input.paymentOrderNo}` : `/api/v1/orders/by-merchant-no/${encodeURIComponent(input.orderNo)}`;
       try {
         const data = await request(config, "GET", path);
         if (data.merchant_order_no !== input.orderNo || data.currency !== "CNY") return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
-        const amounts = paymentAmounts(data);
+        // Unpaid orders legitimately have no received amount yet.
+        const amounts = paymentAmounts(data, false);
         if (!amounts) return { provider: "PERPAY", verified: false, orderNo: input.orderNo, paymentOrderNo: data.order_id as string | undefined, status: "PENDING", message: "PERPAY_QUERY_FAILED" };
         const payment = data.payment as Record<string, unknown> | undefined;
         const status = payment?.status === "CONFIRMED" ? "PAID" : payment?.status === "DISPUTED" ? "FAILED" : "PENDING";

@@ -37,6 +37,10 @@ export class PaymentCallbackService {
     const expectedCurrency = typeof config.currency === "string" ? config.currency.toUpperCase() : undefined;
     const record = result.orderNo ? await paymentRepository(this.database).findOrder(result.orderNo, provider) : null;
     const attempt = record ? await paymentRepository(this.database).findMatchingAttempt(record.id, provider, result.paymentOrderNo) : null;
+    if (provider === "PERPAY" && result.verified && result.message === "PERPAY_REFUND_UPDATED") {
+      await logs.writeBestEffort({ orderId: record?.id, provider, orderNo: result.orderNo, paymentOrderNo: result.paymentOrderNo, eventType: "NOTIFY", verifyStatus: "VERIFIED", message: result.message, payload: input.payload });
+      return this.response(provider, true, input);
+    }
     const callbackMatches = result.verified
       && result.orderNo
       && record

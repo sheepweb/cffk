@@ -510,6 +510,21 @@ test("PerPay webhook verifies raw bytes and maps confirmed events", async () => 
   assert.deepEqual(result, { provider: "PERPAY", verified: true, orderNo: "ORD-PP-2", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440002", amount: 500, currency: "CNY", status: "PAID", message: "PERPAY_WEBHOOK" });
 });
 
+test("PerPay refund webhook is acknowledged without payment amount matching", async () => {
+  const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const rawBody = JSON.stringify({ schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440011", event_type: "REFUND_UPDATED", order_id: "550e8400-e29b-41d4-a716-446655440012", merchant_order_no: "ORD-PP-REFUND", currency: "CNY", refund_status: "PARTIAL" });
+  const digest = createHash("sha256").update(rawBody).digest("hex");
+  const keyId = "550e8400-e29b-41d4-a716-446655440013";
+  const deliveryId = "550e8400-e29b-41d4-a716-446655440014";
+  const eventId = "550e8400-e29b-41d4-a716-446655440011";
+  const timestamp = String(Date.now());
+  const attempt = "1";
+  const signature = `v1=${createHmac("sha256", Buffer.from(secret, "base64url")).update(["perpay:webhook:v1", keyId, timestamp, deliveryId, eventId, attempt, digest].join("\n")).digest("hex")}`;
+  const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: secret, webhookSecret: secret, notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" });
+  const result = await adapter.verify({ payload: {}, rawBody, rawBodyBytes: new TextEncoder().encode(rawBody), headers: new Headers({ "X-PerPay-Webhook-Version": "1", "X-PerPay-Webhook-Key-Id": keyId, "X-PerPay-Webhook-Timestamp": timestamp, "X-PerPay-Webhook-Delivery-Id": deliveryId, "X-PerPay-Webhook-Event-Id": eventId, "X-PerPay-Webhook-Attempt": attempt, "X-PerPay-Webhook-Signature": signature }) });
+  assert.deepEqual(result, { provider: "PERPAY", verified: true, orderNo: "ORD-PP-REFUND", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440012", currency: "CNY", status: "PENDING", message: "PERPAY_REFUND_UPDATED" });
+});
+
 test("PerPay create surfaces a redacted provider error code", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "return_url_not_allowed", message: "sensitive details omitted" } }), { status: 422, headers: { "content-type": "application/json" } });
