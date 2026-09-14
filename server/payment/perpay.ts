@@ -53,6 +53,10 @@ async function readResponseJson(response: Response) {
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>; } catch { throw new Error("PERPAY_INVALID_RESPONSE"); }
 }
 
+function safeApiCode(value: unknown) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value.toUpperCase().replace(/-/g, "_") : "REQUEST_FAILED";
+}
+
 function targetPath(path: string) {
   return path.startsWith("/") ? path : `/${path}`;
 }
@@ -73,7 +77,11 @@ async function request(config: PerpayConfig, method: string, path: string, body?
       ...(bytes.length ? { body: bytes } : {}), redirect: "error", signal: controller.signal,
     });
     const payload = await readResponseJson(response);
-    if (!response.ok || !payload.data || typeof payload.data !== "object") throw new Error("PERPAY_REQUEST_FAILED");
+    if (!response.ok) {
+      const error = payload.error as Record<string, unknown> | undefined;
+      throw new Error(`PERPAY_API_${response.status}_${safeApiCode(error?.code)}`);
+    }
+    if (!payload.data || typeof payload.data !== "object") throw new Error("PERPAY_REQUEST_FAILED");
     return payload.data as Record<string, unknown>;
   } finally { clearTimeout(timeout); }
 }

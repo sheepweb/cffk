@@ -509,3 +509,12 @@ test("PerPay webhook verifies raw bytes and maps confirmed events", async () => 
   const result = await adapter.verify({ payload: {}, rawBody, rawBodyBytes: new TextEncoder().encode(rawBody), headers: new Headers({ "X-PerPay-Webhook-Version": "1", "X-PerPay-Webhook-Key-Id": keyId, "X-PerPay-Webhook-Timestamp": timestamp, "X-PerPay-Webhook-Delivery-Id": deliveryId, "X-PerPay-Webhook-Event-Id": eventId, "X-PerPay-Webhook-Attempt": attempt, "X-PerPay-Webhook-Signature": signature }) });
   assert.deepEqual(result, { provider: "PERPAY", verified: true, orderNo: "ORD-PP-2", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440002", amount: 500, currency: "CNY", status: "PAID", message: "PERPAY_WEBHOOK" });
 });
+
+test("PerPay create surfaces a redacted provider error code", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "return_url_not_allowed", message: "sensitive details omitted" } }), { status: 422, headers: { "content-type": "application/json" } });
+  try {
+    const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", webhookSecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" });
+    await assert.rejects(() => adapter.create({ orderNo: "ORD-PP-ERR", amount: 100, subject: "Order", notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" }), /PERPAY_API_422_RETURN_URL_NOT_ALLOWED/);
+  } finally { globalThis.fetch = originalFetch; }
+});

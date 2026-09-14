@@ -21,7 +21,7 @@ type RuntimeContext = {
 };
 
 function safePaymentCreateError(cause: unknown) {
-  return cause instanceof Error && /^[A-Z][A-Z0-9_:-]+$/.test(cause.message)
+  return cause instanceof Error && /^[A-Z][A-Z0-9_:-]+$/.test(cause.message) && cause.message.length <= 120
     ? cause.message
     : "PAYMENT_CREATE_FAILED";
 }
@@ -194,5 +194,4 @@ export function requirePaymentFlowService() {
   if (!context.env?.DB) appError("DATABASE_UNAVAILABLE");
   return new PaymentFlowService(context.env.DB, context.env);
 }
-
 
