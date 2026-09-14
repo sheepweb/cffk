@@ -74,8 +74,9 @@ async function request(config: PerpayConfig, method: string, path: string, body?
     const response = await fetch(`${config.baseUrl}${target}`, {
       method: method.toUpperCase(),
       headers: { "content-type": "application/json", "X-PerPay-Client-Id": "default", "X-PerPay-Timestamp": timestamp, "X-PerPay-Nonce": nonce, "X-PerPay-Signature-Version": "v1", "X-PerPay-Signature": signature },
-      ...(bytes.length ? { body: bytes } : {}), redirect: "error", signal: controller.signal,
+      ...(bytes.length ? { body: bytes } : {}), redirect: "manual", signal: controller.signal,
     });
+    if (response.status >= 300 && response.status < 400) throw new Error("PERPAY_REDIRECT_REJECTED");
     const payload = await readResponseJson(response);
     if (!response.ok) {
       const error = payload.error as Record<string, unknown> | undefined;
