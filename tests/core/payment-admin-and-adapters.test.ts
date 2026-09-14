@@ -474,3 +474,38 @@ test("Stripe active query rejects a session owned by another order", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test("PerPay adapter signs create requests and validates checkout response", async () => {
+  const originalFetch = globalThis.fetch;
+  let request: Request | undefined;
+  const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  globalThis.fetch = async (input, init) => {
+    request = new Request(input, init);
+    return new Response(JSON.stringify({ data: { order_id: "550e8400-e29b-41d4-a716-446655440000", merchant_order_no: "ORD-PP-1", currency: "CNY", checkout: { checkout_url: "https://perpay.example/checkout/pct1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } } }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: secret, webhookSecret: secret, notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" });
+    const payment = await adapter.create({ orderNo: "ORD-PP-1", amount: 1234, subject: "Order", notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" });
+    assert.equal(payment.mode, "redirect");
+    assert.equal(payment.paymentOrderNo, "550e8400-e29b-41d4-a716-446655440000");
+    assert.equal(request!.method, "POST");
+    assert.equal(request!.headers.get("X-PerPay-Client-Id"), "default");
+    assert.match(request!.headers.get("X-PerPay-Signature") ?? "", /^[0-9a-f]{64}$/);
+    assert.equal(JSON.parse(await request!.text()).amount_cents, 1234);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("PerPay webhook verifies raw bytes and maps confirmed events", async () => {
+  const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const rawBody = JSON.stringify({ schema: "perpay:outbox-event:v2", event_id: "550e8400-e29b-41d4-a716-446655440001", event_type: "PAYMENT_CONFIRMED", order_id: "550e8400-e29b-41d4-a716-446655440002", merchant_order_no: "ORD-PP-2", currency: "CNY", payment_status: "CONFIRMED", received_amount_cents: 500 });
+  const digest = createHash("sha256").update(rawBody).digest("hex");
+  const keyId = "550e8400-e29b-41d4-a716-446655440003";
+  const deliveryId = "550e8400-e29b-41d4-a716-446655440004";
+  const eventId = "550e8400-e29b-41d4-a716-446655440001";
+  const timestamp = String(Date.now());
+  const attempt = "1";
+  const signature = `v1=${createHmac("sha256", Buffer.from(secret, "base64url")).update(["perpay:webhook:v1", keyId, timestamp, deliveryId, eventId, attempt, digest].join("\n")).digest("hex")}`;
+  const adapter = createProviderAdapter("PERPAY", { schemaVersion: 1, baseUrl: "https://perpay.example", apiSecret: secret, webhookSecret: secret, notifyUrl: "https://shop.example/api/payments/perpay/notify", returnUrl: "https://shop.example/payment-result" });
+  const result = await adapter.verify({ payload: {}, rawBody, rawBodyBytes: new TextEncoder().encode(rawBody), headers: new Headers({ "X-PerPay-Webhook-Version": "1", "X-PerPay-Webhook-Key-Id": keyId, "X-PerPay-Webhook-Timestamp": timestamp, "X-PerPay-Webhook-Delivery-Id": deliveryId, "X-PerPay-Webhook-Event-Id": eventId, "X-PerPay-Webhook-Attempt": attempt, "X-PerPay-Webhook-Signature": signature }) });
+  assert.deepEqual(result, { provider: "PERPAY", verified: true, orderNo: "ORD-PP-2", paymentOrderNo: "550e8400-e29b-41d4-a716-446655440002", amount: 500, currency: "CNY", status: "PAID", message: "PERPAY_WEBHOOK" });
+});
