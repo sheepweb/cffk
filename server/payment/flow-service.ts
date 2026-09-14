@@ -24,7 +24,8 @@ function safePaymentCreateError(cause: unknown) {
   if (!(cause instanceof Error)) return "PAYMENT_CREATE_FAILED";
   if (/^[A-Z][A-Z0-9_:-]+$/.test(cause.message) && cause.message.length <= 120) return cause.message;
   const name = cause.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
-  return name ? `PAYMENT_RUNTIME_${name}` : "PAYMENT_CREATE_FAILED";
+  const detail = cause.message.replace(/https?:\/\/[^\s]+/gi, "[url]").replace(/[A-Za-z0-9_-]{32,}/g, "[token]").replace(/\s+/g, " ").trim().slice(0, 100);
+  return name ? `PAYMENT_RUNTIME_${name}${detail ? `:${detail}` : ""}` : "PAYMENT_CREATE_FAILED";
 }
 
 function paymentReturnUrl(value: unknown, orderNo: string) {
